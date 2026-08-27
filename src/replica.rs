@@ -297,21 +297,27 @@ impl ReplicaServer {
     pub fn handle_raw(&self, remote: &str, bytes: &[u8]) -> Response {
         match proto::decode::<Request>(bytes) {
             Ok(mut req) => {
-                let response = self.handle(remote, &req);
+                let response = if req.names_ok() {
+                    self.handle(remote, &req)
+                } else {
+                    self.deny_malformed(remote)
+                };
                 // Best-effort scrub of the plaintext copy decode made.
                 if let Request::Put { value, .. } = &mut req {
                     value.zeroize();
                 }
                 response
             }
-            Err(_) => {
-                let store = self.inner.lock_store();
-                if let Err(err) = store.audit(remote, "malformed", "", "denied") {
-                    tracing::error!(%err, "audit append failed");
-                }
-                Response::Denied
-            }
+            Err(_) => self.deny_malformed(remote),
         }
+    }
+
+    fn deny_malformed(&self, remote: &str) -> Response {
+        let store = self.inner.lock_store();
+        if let Err(err) = store.audit(remote, "malformed", "", "denied") {
+            tracing::error!(%err, "audit append failed");
+        }
+        Response::Denied
     }
 
     /// Handle one decoded request and record it in the replica's own

@@ -175,21 +175,27 @@ impl Bunker {
     pub fn handle_raw(&self, remote: &str, bytes: &[u8]) -> Response {
         match proto::decode::<Request>(bytes) {
             Ok(mut req) => {
-                let response = self.handle(remote, &req);
+                let response = if req.names_ok() {
+                    self.handle(remote, &req)
+                } else {
+                    self.deny_malformed(remote)
+                };
                 // Best-effort scrub of the plaintext copy decode made.
                 if let Request::Put { value, .. } = &mut req {
                     value.zeroize();
                 }
                 response
             }
-            Err(_) => {
-                let store = self.lock_store();
-                if let Err(err) = store.audit(remote, "malformed", "", "denied") {
-                    tracing::error!(%err, "audit append failed");
-                }
-                Response::Denied
-            }
+            Err(_) => self.deny_malformed(remote),
         }
+    }
+
+    fn deny_malformed(&self, remote: &str) -> Response {
+        let store = self.lock_store();
+        if let Err(err) = store.audit(remote, "malformed", "", "denied") {
+            tracing::error!(%err, "audit append failed");
+        }
+        Response::Denied
     }
 
     /// Handle one decoded request from an authenticated peer. Synchronous:
@@ -1123,6 +1129,11 @@ async fn handle_sync_stream(
         return Ok(());
     };
     match req {
+        SyncRequest::FetchGroup { group } | SyncRequest::FetchSecrets { group, .. }
+            if group.len() > proto::MAX_NAME =>
+        {
+            sync::write_msg(send, &SyncMessage::SyncDenied).await
+        }
         SyncRequest::Hello => sync_hello(inner, remote, send).await,
         SyncRequest::FetchGroup { group } => sync_fetch_group(inner, remote, &group, send).await,
         SyncRequest::FetchSecrets { group, names } => {
@@ -2003,10 +2014,22 @@ mod tests {
             bunker.handle_raw(&remote, b"\xffnot-cbor"),
             Response::Denied
         );
+        // Over-long names are rejected even from a service admin, and the
+        // audit row does not carry the name.
+        let long = proto::encode(&Request::CreateGroup {
+            name: "x".repeat(proto::MAX_NAME + 1),
+        })
+        .unwrap();
+        assert_eq!(bunker.handle_raw(&remote, &long), Response::Denied);
         drop(bunker);
+        let max_target: i64 = rusqlite::Connection::open(&db)
+            .unwrap()
+            .query_row("SELECT max(length(target)) FROM audit_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(max_target, 0);
         let verified = Store::open(&db).unwrap().verify_audit_chain().unwrap();
         assert!(
-            matches!(verified, AuditVerification::Valid { entries: 1, .. }),
+            matches!(verified, AuditVerification::Valid { entries: 2, .. }),
             "expected one audit entry for the malformed frame, got {verified:?}"
         );
     }
