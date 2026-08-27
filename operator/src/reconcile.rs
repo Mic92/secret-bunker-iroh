@@ -316,13 +316,23 @@ pub async fn apply_bunker_secret(cr: &BunkerSecret, ctx: &Context) -> Result<Act
             .with_label_values(&["skipped"])
             .inc();
     } else {
-        secrets
+        let applied = secrets
             .patch(
                 &target,
                 &PatchParams::apply(FIELD_MANAGER).force(),
                 &Patch::Apply(&desired),
             )
-            .await?;
+            .await;
+        // 4xx: the apiserver rejects this object; retrying won't help, and
+        // bailing here would leave a stale Ready=True. 5xx/transport → backoff.
+        if let Err(kube::Error::Api(ae)) = &applied
+            && (400..500).contains(&ae.code)
+        {
+            let message = format!("apiserver rejected Secret {ns}/{target}: {}", ae.message);
+            degrade(cr, ctx, "ApplyFailed", &message).await?;
+            return Ok(Action::requeue(ctx.resync));
+        }
+        applied?;
         ctx.metrics
             .applies_total
             .with_label_values(&["applied"])
@@ -368,6 +378,7 @@ pub async fn apply_bunker_secret(cr: &BunkerSecret, ctx: &Context) -> Result<Act
         conditions: vec![condition],
         last_sync_time: last_synced,
         observed_generation: cr.metadata.generation,
+        synced_generation: cr.metadata.generation,
         synced_secret_keys: data.keys().cloned().collect(),
         target_secret_name: Some(target),
     };
@@ -393,13 +404,12 @@ async fn handle_render_error(
     // AccessRevoked is a diagnosis about a group that USED to be readable —
     // it only applies while the CR's spec hasn't moved since the last
     // successful sync. Without this, editing a synced CR to reference a
-    // group that never existed (generation bumped, observedGeneration still
-    // stale) would misreport as "revoked" instead of the more accurate
-    // MissingGroup.
+    // group that never existed would misreport as "revoked" instead of the
+    // more accurate MissingGroup.
     let spec_unchanged_since_sync = cr
         .status
         .as_ref()
-        .is_some_and(|s| s.observed_generation == cr.metadata.generation);
+        .is_some_and(|s| s.synced_generation == cr.metadata.generation);
     let (reason, message) = match &e {
         RenderError::MissingGroup { group } if previously_synced && spec_unchanged_since_sync => (
             "AccessRevoked",
