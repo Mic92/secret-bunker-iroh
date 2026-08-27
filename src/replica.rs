@@ -820,9 +820,11 @@ async fn sync_group_via_fetch(
     group: &str,
 ) -> Result<()> {
     match fetch_group_state(conn, group).await? {
-        Some(state) => sync_one_group(inner, conn, &state).await,
-        None => drop_group_and_gc(inner, group),
+        Some(state) => sync_one_group(inner, conn, &state).await?,
+        None => drop_group_and_gc(inner, group)?,
     }
+    touch_last_synced(inner);
+    Ok(())
 }
 
 enum ApplyOutcome {
@@ -840,7 +842,8 @@ enum ApplyOutcome {
 
 /// Fetch the secrets `state` obsoletes and apply the whole state in one
 /// local transaction; publish `GroupAdded` and per-secret events strictly
-/// after the commit.
+/// after the commit. Does not stamp `last_synced`; callers do, once
+/// their whole round is applied.
 async fn apply_group_state(
     inner: &Arc<ReplicaInner>,
     conn: &Connection,
@@ -895,7 +898,6 @@ async fn apply_group_state(
             },
         });
     }
-    touch_last_synced(inner);
     Ok(ApplyOutcome::Applied {
         skipped_undecryptable,
     })
