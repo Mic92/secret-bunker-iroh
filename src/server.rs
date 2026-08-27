@@ -1050,6 +1050,7 @@ impl ProtocolHandler for Bunker {
 /// How long a sync session keeps draining further events after the first
 /// one of a batch, before emitting the deduplicated result.
 const SYNC_DEBOUNCE: Duration = Duration::from_millis(200);
+const SYNC_DEBOUNCE_MAX: Duration = Duration::from_secs(1);
 
 /// Maximum `SecretEntry` rows per `GroupSecrets` message.
 const SYNC_SECRETS_CHUNK: usize = 1000;
@@ -1302,9 +1303,13 @@ async fn sync_hello(inner: &Inner, remote: &str, send: &mut SendStream) -> Resul
             Err(broadcast::error::RecvError::Closed) => return Ok(()),
         }
         // Debounce: keep draining until the channel stays quiet for the
-        // whole window, then emit one deduplicated batch.
+        // window (but at most SYNC_DEBOUNCE_MAX, so steady writes cannot
+        // starve pushes), then emit one deduplicated batch.
+        let deadline = tokio::time::Instant::now() + SYNC_DEBOUNCE_MAX;
         loop {
-            match tokio::time::timeout(SYNC_DEBOUNCE, events.recv()).await {
+            let window =
+                SYNC_DEBOUNCE.min(deadline.saturating_duration_since(tokio::time::Instant::now()));
+            match tokio::time::timeout(window, events.recv()).await {
                 Ok(Ok(group)) => {
                     batch.insert(group);
                 }
@@ -2024,7 +2029,9 @@ mod tests {
         drop(bunker);
         let max_target: i64 = rusqlite::Connection::open(&db)
             .unwrap()
-            .query_row("SELECT max(length(target)) FROM audit_log", [], |r| r.get(0))
+            .query_row("SELECT max(length(target)) FROM audit_log", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(max_target, 0);
         let verified = Store::open(&db).unwrap().verify_audit_chain().unwrap();

@@ -2863,6 +2863,46 @@ async fn replica_last_synced_waits_for_full_manifest() {
     router.shutdown().await.unwrap();
 }
 
+/// Steady writes to one group must not starve live pushes for another
+/// (the debounce window is capped).
+#[tokio::test]
+async fn replica_push_not_starved_by_unrelated_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (router, addr, admin, secret) = granted_replica_fixture(dir.path(), &["g1", "g2"]).await;
+    let (replica, ep) = spawn_replica(dir.path(), secret, &addr).await;
+    let mut rx = replica.subscribe();
+    await_last_synced(&replica).await;
+
+    let noise = async {
+        let mut v = 0u64;
+        loop {
+            v += 1;
+            put(&admin, "g2", "s", b"n", v).await;
+            if v == 2 {
+                put(&admin, "g1", "s", b"v2", 1).await;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    };
+    let want = ReplicaEvent::SecretChanged {
+        group: "g1".into(),
+        name: "s".into(),
+        version: 2,
+    };
+    tokio::select! {
+        _ = noise => unreachable!(),
+        _ = await_replica_event(&mut rx, &want) => {}
+        _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+            panic!("live push starved by unrelated writes")
+        }
+    }
+
+    replica.shutdown().await;
+    ep.close().await;
+    admin.close().await;
+    router.shutdown().await.unwrap();
+}
+
 /// More secrets than SYNC_FETCH_CHUNK: the replica must split FetchSecrets
 /// across streams and still converge on all of them.
 #[tokio::test]
