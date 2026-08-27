@@ -338,6 +338,7 @@ Every `BunkerSecret` carries a single condition of `type: Ready`. The
 | `AccessRevoked` | A group that had synced successfully disappeared from the mirror (revocation); the Secret is frozen at its last good content |
 | `StaleReplica` | The sync session has been down longer than `--staleness-threshold`; the Secret is still serving its last synced content |
 | `Conflict` | The target Secret exists and isn't owned by this CR; the operator refuses to adopt or overwrite it |
+| `TypeMismatch` | `target.type` differs from the existing Secret's type, which Kubernetes makes immutable; delete the Secret or revert the spec |
 
 The operator emits a Warning Kubernetes Event on every **transition** into
 a failure reason (repeated reconciles that land on the same reason again

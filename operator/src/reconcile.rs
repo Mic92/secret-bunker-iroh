@@ -281,6 +281,19 @@ pub async fn apply_bunker_secret(cr: &BunkerSecret, ctx: &Context) -> Result<Act
     }
 
     let desired = build_secret(cr, &data);
+    // Secret.type is immutable: the data-only hash below can't see a type
+    // edit, and applying it would 422.
+    if let Some(existing) = &existing {
+        let have = existing.type_.as_deref().unwrap_or("Opaque");
+        let want = desired.type_.as_deref().unwrap_or("Opaque");
+        if have != want {
+            let message = format!(
+                "Secret {ns}/{target} has immutable type '{have}', spec wants '{want}'; delete the Secret or revert target.type"
+            );
+            degrade(cr, ctx, "TypeMismatch", &message).await?;
+            return Ok(Action::requeue(ctx.resync));
+        }
+    }
     let desired_hash = desired.metadata.annotations.as_ref().unwrap()[HASH_ANNOTATION].clone();
     // Compare CONTENT, not the (informational-only) annotation: the
     // annotation on a manually-edited Secret is left untouched by the hand

@@ -213,6 +213,67 @@ async fn hash_match_skips_apply() {
     assert_eq!(m.counter.value() as u64, 1);
 }
 
+/// Secret.type is immutable: a target.type edit against an existing owned
+/// Secret cannot be applied, and must not be reported as Synced.
+#[tokio::test]
+async fn type_change_on_existing_secret_is_reported_not_claimed_synced() {
+    let bunker = TestBunker::spawn().await;
+    bunker.create_group("prod").await;
+    let reader = SecretKey::generate();
+    bunker.add_reader("op", &reader).await;
+    bunker.grant_read("prod", "op").await;
+    bunker.put("prod", "pw", b"hunter2", 0).await;
+
+    let cr = test_cr(
+        "data: [{secretKey: PW, remoteRef: {group: prod, name: pw}}]\ntarget: {type: kubernetes.io/dockerconfigjson}",
+    );
+    let script = vec![
+        expect(
+            "GET",
+            "/api/v1/namespaces/ns/secrets/app",
+            200,
+            json!({
+                "apiVersion": "v1", "kind": "Secret", "type": "Opaque",
+                "metadata": {
+                    "name": "app", "namespace": "ns",
+                    "ownerReferences": [{"apiVersion": "bunker.fables-for-robots.ch/v1alpha1",
+                        "kind": "BunkerSecret", "name": "app", "uid": "uid-1", "controller": true}]
+                },
+                "data": {"PW": base64_encode(b"hunter2")}
+            }),
+        ),
+        expect(
+            "POST",
+            "events",
+            201,
+            json!({
+                "apiVersion": "events.k8s.io/v1", "kind": "Event",
+                "metadata": {"name": "app.warn", "namespace": "ns"}
+            }),
+        ),
+        expect_checked(
+            "PATCH",
+            "/bunkersecrets/app/status",
+            200,
+            json!({"apiVersion": "bunker.fables-for-robots.ch/v1alpha1", "kind": "BunkerSecret",
+                   "metadata": {"name": "app", "namespace": "ns"}, "spec": {}}),
+            |body| {
+                assert_eq!(body["status"]["conditions"][0]["status"], json!("False"));
+                assert_eq!(
+                    body["status"]["conditions"][0]["reason"],
+                    json!("TypeMismatch")
+                );
+            },
+        ),
+    ];
+    let (client, join) = scripted(script);
+    let (ctx, _dir) = synced_context(&bunker, reader, client).await;
+    common::await_mirrored(&ctx.replica, "prod", "pw").await;
+
+    apply_bunker_secret(&cr, &ctx).await.unwrap();
+    join.await.unwrap();
+}
+
 /// A manually-edited Secret data value must be reverted even though its
 /// content-hash annotation still carries the CORRECT desired hash (the hand
 /// edit touched `data` but left the annotation alone) — the skip gate has to
