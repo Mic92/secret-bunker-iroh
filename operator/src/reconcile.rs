@@ -209,6 +209,22 @@ fn status_with(cr: &BunkerSecret, condition: Condition) -> BunkerSecretStatus {
     }
 }
 
+/// Warn (on transition), write `Ready=False/<reason>`, and requeue.
+async fn degrade(
+    cr: &BunkerSecret,
+    ctx: &Context,
+    reason: &str,
+    message: &str,
+) -> Result<(), Error> {
+    publish_warning_on_transition(cr, ctx, reason, message).await;
+    patch_status(
+        cr,
+        ctx,
+        status_with(cr, ready_condition(cr, false, reason, message)),
+    )
+    .await
+}
+
 fn owned_by(secret: &Secret, cr: &BunkerSecret) -> bool {
     let Some(uid) = &cr.metadata.uid else {
         return false;
@@ -231,13 +247,7 @@ pub async fn apply_bunker_secret(cr: &BunkerSecret, ctx: &Context) -> Result<Act
     // must not look like mass deletion). Tests pre-converge, production waits.
     if ctx.replica.status().last_synced.is_none() {
         let message = "replica has not completed its initial sync";
-        publish_warning_on_transition(cr, ctx, "AwaitingSync", message).await;
-        patch_status(
-            cr,
-            ctx,
-            status_with(cr, ready_condition(cr, false, "AwaitingSync", message)),
-        )
-        .await?;
+        degrade(cr, ctx, "AwaitingSync", message).await?;
         return Ok(Action::requeue(Duration::from_secs(5)));
     }
 
@@ -266,13 +276,7 @@ pub async fn apply_bunker_secret(cr: &BunkerSecret, ctx: &Context) -> Result<Act
         let message = format!(
             "Secret {ns}/{target} exists and is not owned by this BunkerSecret; refusing to adopt"
         );
-        publish_warning_on_transition(cr, ctx, "Conflict", &message).await;
-        patch_status(
-            cr,
-            ctx,
-            status_with(cr, ready_condition(cr, false, "Conflict", &message)),
-        )
-        .await?;
+        degrade(cr, ctx, "Conflict", &message).await?;
         return Ok(Action::requeue(ctx.resync));
     }
 
@@ -429,13 +433,7 @@ async fn handle_render_error(
     if reason == "AccessRevoked" {
         tracing::warn!(cr = %cr.name_any(), "access revoked; freezing synced Secret");
     }
-    publish_warning_on_transition(cr, ctx, reason, &message).await;
-    patch_status(
-        cr,
-        ctx,
-        status_with(cr, ready_condition(cr, false, reason, &message)),
-    )
-    .await?;
+    degrade(cr, ctx, reason, &message).await?;
     Ok(Action::requeue(ctx.resync))
 }
 
