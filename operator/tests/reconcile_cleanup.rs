@@ -144,3 +144,42 @@ async fn retain_leaves_unowned_secret_alone() {
         .unwrap();
     join.await.unwrap();
 }
+
+/// CR deleted mid-rename: the Secret it actually owns is the one in
+/// status.targetSecretName, and Retain must orphan that one too.
+#[tokio::test]
+async fn retain_orphans_pending_rename_source() {
+    let not_found = json!({
+        "kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "NotFound", "code": 404
+    });
+    let script = vec![
+        expect("GET", "/api/v1/namespaces/ns/secrets/app", 404, not_found),
+        expect(
+            "GET",
+            "/api/v1/namespaces/ns/secrets/old",
+            200,
+            json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": {"name": "old", "namespace": "ns",
+                    "ownerReferences": [{"apiVersion": "bunker.fables-for-robots.ch/v1alpha1",
+                        "kind": "BunkerSecret", "name": "app", "uid": "uid-1", "controller": true}]}
+            }),
+        ),
+        expect_checked(
+            "PATCH",
+            "/api/v1/namespaces/ns/secrets/old",
+            200,
+            json!({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": "old", "namespace": "ns"}}),
+            |body| assert!(body["metadata"]["ownerReferences"].is_null()),
+        ),
+    ];
+    let (client, join) = scripted(script);
+    let (ctx, _dir) = ctx_with(client).await;
+    let mut cr = deleting_cr("Retain");
+    cr.status = Some(secret_bunker_operator::crd::BunkerSecretStatus {
+        target_secret_name: Some("old".into()),
+        ..Default::default()
+    });
+    cleanup_bunker_secret(&cr, &ctx).await.unwrap();
+    join.await.unwrap();
+}

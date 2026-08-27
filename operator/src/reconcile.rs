@@ -504,16 +504,15 @@ pub async fn cleanup_bunker_secret(cr: &BunkerSecret, ctx: &Context) -> Result<A
     if cr.spec.deletion_policy == DeletionPolicy::Retain {
         let secrets: Api<Secret> = Api::namespaced(ctx.client.clone(), &ns);
         let target = cr.target_name();
-        match secrets.get(&target).await {
-            Ok(existing) if owned_by(&existing, cr) => {
-                let patch = json!({"metadata": {"ownerReferences": null}});
-                secrets
-                    .patch(&target, &PatchParams::default(), &Patch::Merge(&patch))
-                    .await?;
-            }
-            Ok(_) => {}                                       // not ours — leave it
-            Err(kube::Error::Api(ae)) if ae.code == 404 => {} // already gone
-            Err(e) => return Err(e.into()),
+        cleanup_target(&secrets, cr, &target).await?;
+        // Mid-rename the owned Secret still carries the old name.
+        if let Some(prev) = cr
+            .status
+            .as_ref()
+            .and_then(|s| s.target_secret_name.as_deref())
+            && prev != target
+        {
+            cleanup_target(&secrets, cr, prev).await?;
         }
     }
     Ok(Action::await_change())
