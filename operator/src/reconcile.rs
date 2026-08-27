@@ -510,10 +510,10 @@ async fn cleanup_target(secrets: &Api<Secret>, cr: &BunkerSecret, name: &str) ->
 /// Retain policy: orphan the Secret by clearing its ownerReferences.
 pub async fn cleanup_bunker_secret(cr: &BunkerSecret, ctx: &Context) -> Result<Action, Error> {
     let ns = cr.namespace().unwrap_or_default();
-    ctx.metrics
+    let _ = ctx
+        .metrics
         .ready
-        .with_label_values(&[&ns, &cr.name_any()])
-        .set(0);
+        .remove_label_values(&[&ns, &cr.name_any()]);
     if cr.spec.deletion_policy == DeletionPolicy::Retain {
         let secrets: Api<Secret> = Api::namespaced(ctx.client.clone(), &ns);
         let target = cr.target_name();

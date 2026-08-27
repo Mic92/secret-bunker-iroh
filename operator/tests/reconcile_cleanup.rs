@@ -95,10 +95,18 @@ async fn delete_policy_leaves_gc_to_owner_reference() {
     // No API calls at all: GC cascades via the ownerReference.
     let (client, join) = scripted(vec![]);
     let (ctx, _dir) = ctx_with(client).await;
+    ctx.metrics.ready.with_label_values(&["ns", "app"]).set(1);
     cleanup_bunker_secret(&deleting_cr("Delete"), &ctx)
         .await
         .unwrap();
     join.await.unwrap();
+    // The deleted CR's series is gone, not pinned at 0.
+    let fams = ctx.metrics.registry.gather();
+    assert!(
+        fams.iter()
+            .filter(|f| f.name() == "bunker_secret_ready")
+            .all(|f| f.metric.is_empty())
+    );
 }
 
 #[tokio::test]
