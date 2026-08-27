@@ -1090,9 +1090,12 @@ impl ProtocolHandler for SyncServer {
         // held across one, so an abort cannot strand the lock.
         let mut streams = tokio::task::JoinSet::new();
         loop {
-            let (mut send, mut recv) = match connection.accept_bi().await {
-                Ok(pair) => pair,
-                Err(_) => break, // peer closed (or connection error): done
+            let (mut send, mut recv) = tokio::select! {
+                pair = connection.accept_bi() => match pair {
+                    Ok(pair) => pair,
+                    Err(_) => break, // peer closed (or connection error): done
+                },
+                Some(_) = streams.join_next(), if !streams.is_empty() => continue,
             };
             let inner = self.0.clone();
             let remote = remote.clone();
@@ -1116,7 +1119,7 @@ async fn handle_sync_stream(
     send: &mut SendStream,
     recv: &mut iroh::endpoint::RecvStream,
 ) -> Result<()> {
-    let Some(req) = sync::read_msg::<SyncRequest>(recv).await? else {
+    let Some(req) = sync::read_req::<SyncRequest>(recv).await? else {
         return Ok(());
     };
     match req {

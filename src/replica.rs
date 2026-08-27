@@ -912,17 +912,32 @@ async fn fetch_secrets(
     group: &str,
     names: Vec<String>,
 ) -> Result<Option<Vec<FetchedSecret>>> {
+    let mut out = Vec::new();
+    for chunk in names.chunks(sync::SYNC_FETCH_CHUNK) {
+        if !fetch_secrets_chunk(conn, group, chunk, &mut out).await? {
+            return Ok(None);
+        }
+    }
+    Ok(Some(out))
+}
+
+/// One `FetchSecrets` stream; `false` on `SyncDenied`.
+async fn fetch_secrets_chunk(
+    conn: &Connection,
+    group: &str,
+    names: &[String],
+    out: &mut Vec<FetchedSecret>,
+) -> Result<bool> {
     let (mut send, mut recv) = conn.open_bi().await.context("opening fetch stream")?;
     sync::write_msg(
         &mut send,
         &SyncRequest::FetchSecrets {
             group: group.to_string(),
-            names,
+            names: names.to_vec(),
         },
     )
     .await?;
     send.finish().context("finishing fetch stream")?;
-    let mut out = Vec::new();
     loop {
         match sync::read_msg::<SyncMessage>(&mut recv).await? {
             Some(SyncMessage::SecretData {
@@ -942,8 +957,8 @@ async fn fetch_secrets(
                 created_at,
                 created_by,
             }),
-            Some(SyncMessage::FetchDone) => return Ok(Some(out)),
-            Some(SyncMessage::SyncDenied) => return Ok(None),
+            Some(SyncMessage::FetchDone) => return Ok(true),
+            Some(SyncMessage::SyncDenied) => return Ok(false),
             Some(other) => bail!("unexpected message during secret fetch: {other:?}"),
             None => bail!("secret fetch stream ended before FetchDone"),
         }

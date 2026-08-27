@@ -2862,3 +2862,27 @@ async fn replica_last_synced_waits_for_full_manifest() {
     admin.close().await;
     router.shutdown().await.unwrap();
 }
+
+/// More secrets than SYNC_FETCH_CHUNK: the replica must split FetchSecrets
+/// across streams and still converge on all of them.
+#[tokio::test]
+async fn replica_fetches_large_groups_in_chunks() {
+    let dir = tempfile::tempdir().unwrap();
+    let (router, addr, admin, secret) = granted_replica_fixture(dir.path(), &["g"]).await;
+    let total = sync::SYNC_FETCH_CHUNK + 5;
+    for i in 1..total {
+        put(&admin, "g", &format!("s{i}"), &[i as u8], 0).await;
+    }
+    let (replica, ep) = spawn_replica(dir.path(), secret, &addr).await;
+    await_last_synced(&replica).await;
+    assert_eq!(replica.list("g").unwrap().len(), total);
+    assert_eq!(
+        &*replica.get("g", &format!("s{}", total - 1)).unwrap(),
+        &[(total - 1) as u8]
+    );
+
+    replica.shutdown().await;
+    ep.close().await;
+    admin.close().await;
+    router.shutdown().await.unwrap();
+}
