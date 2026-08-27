@@ -333,6 +333,7 @@ Every `BunkerSecret` carries a single condition of `type: Ready`. The
 | `AwaitingSync` | The embedded replica hasn't completed its initial sync yet; nothing has been rendered |
 | `InvalidKey` | A rendered key isn't a valid k8s Secret key name; fix with `rewrite` or an explicit `data` entry |
 | `JsonError` | A `property`/`extract` reference failed to parse as JSON, a JSON Pointer didn't resolve, or an `extract` target wasn't a JSON object |
+| `TooLarge` | The rendered data exceeds Kubernetes' 1 MiB Secret limit |
 | `MissingSecret` | A `data` hard reference points at a bunker secret that doesn't exist |
 | `MissingGroup` | A referenced group has never appeared in the mirror (no read grant, or the group doesn't exist yet) |
 | `AccessRevoked` | A group that had synced successfully disappeared from the mirror (revocation); the Secret is frozen at its last good content |

@@ -437,6 +437,10 @@ async fn handle_render_error(
             "JsonError",
             format!("'{group}/{name}' is not a JSON object; extract requires one"),
         ),
+        RenderError::TooLarge { bytes } => (
+            "TooLarge",
+            format!("rendered data is {bytes} bytes; Kubernetes caps Secrets at 1 MiB"),
+        ),
         RenderError::NotYetSynced { group, name, msg } => {
             return Err(Error::Transient(format!(
                 "'{group}/{name}' not yet decryptable: {msg}"
